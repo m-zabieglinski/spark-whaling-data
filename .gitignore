@@ -1,0 +1,10 @@
+.bloop/
+.ipynb_checkpoints/
+.metals/
+.vscode/
+bin/
+*.class
+*.log
+target/
+
+metals.sbt
