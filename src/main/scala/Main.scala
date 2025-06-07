@@ -1,7 +1,7 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions.{col, when}
 import org.apache.spark.ml.classification.RandomForestClassifier
-import org.apache.spark.ml.feature.{VectorAssembler, StringIndexer}
+import org.apache.spark.ml.feature.{VectorAssembler, StringIndexer, IndexToString}
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.param.ParamMap 
@@ -19,7 +19,6 @@ import org.apache.spark.ml.param.ParamMap
       .option("delimiter", "\t")
       .load("AmericanOffshoreWhalingLogbookData/aowl_20240403.txt")
       .drop("sequence", "VoyageID", "Encounter", "NStruck", "NTried", "Place", "Source", "Remarks")
-      .where("UPPER(Species) != 'WHALE'")
       .where("Species IS NOT NULL")
       .where("UPPER(Species) != 'NULL'")
       .select(
@@ -31,15 +30,22 @@ import org.apache.spark.ml.param.ParamMap
         when(col("Species") === "Killers", "Killer").otherwise(col("Species")).alias("Species")
         )
 
+  val dfSpecified = df.where("UPPER(Species) != 'WHALE'")
+  val dfUnspecified = df.where("UPPER(Species) = 'WHALE'")
+
   val assembler = new VectorAssembler()
     .setInputCols(Array("Lat", "Lon", "Day", "Month", "Year"))
     .setOutputCol("features")
-  val label_indexer = new StringIndexer()
+  val labelIndexer = new StringIndexer()
     .setInputCol("Species")
     .setOutputCol("indexed_label")
-    .fit(df)
+    .fit(dfSpecified)
+  val indexToString = new IndexToString()
+    .setInputCol("prediction")
+    .setOutputCol("Species")
+    .setLabels(labelIndexer.labels)
 
-  val Array(train_data, test_data) = df.randomSplit(Array(0.8, 0.2), seed = seed)
+  val Array(train_data, test_data) = dfSpecified.randomSplit(Array(0.8, 0.2), seed = seed)
 
   val rf = new RandomForestClassifier()
     .setLabelCol("indexed_label")
@@ -77,7 +83,7 @@ import org.apache.spark.ml.param.ParamMap
   )
 
   val pipeline = new Pipeline()
-    .setStages(Array(label_indexer, assembler, rf))
+    .setStages(Array(labelIndexer, assembler, rf))
 
   val models = pipeline.fit(train_data, paramMaps)
   val predictions = models.map(_.transform(test_data))
@@ -92,3 +98,13 @@ import org.apache.spark.ml.param.ParamMap
   accuracies.zipWithIndex.foreach{ acc =>
     println(s"Model ${acc._2} | Accuracy = ${acc._1}")
   }
+
+  val bestModel = models.zip(accuracies).maxBy{ modelWithAcc => modelWithAcc._2}._1
+
+  val dfPredicted = indexToString.transform(
+    bestModel.transform(
+      dfUnspecified.drop("Species")
+      )
+    )
+    .drop("features", "rawPrediction", "probability", "prediction")
+  dfPredicted.show()
